@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="manifest" href="/manifest.json">
+  <meta name="theme-color" content="#5b5b8a">
+  <title>notes</title>
+  <link rel="stylesheet" href="style.css">
+  <style>
+    .topbar-user {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 0 8px 14px;
+      border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+      margin-bottom: 8px;
+    }
+
+    .user-avatar {
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      object-fit: cover;
+    }
+
+    .user-name {
+      font-size: 12px;
+      font-weight: 600;
+      color: #5b5b8a;
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .logout-btn {
+      background: none;
+      border: none;
+      font-size: 11px;
+      color: #bbb;
+      cursor: pointer;
+      padding: 0;
+      font-family: inherit;
+    }
+
+    .logout-btn:hover {
+      color: #e07070;
+    }
+
+    .auth-loading {
+      position: fixed;
+      inset: 0;
+      background: linear-gradient(135deg, #fef6f9, #eef6ff);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 14px;
+      color: #bbb;
+      font-family: inherit;
+      z-index: 999;
+    }
+  </style>
+</head>
+
+<body>
+
+  <div class="auth-loading" id="authLoading">loading…</div>
+
+  <div class="sidebar" id="sidebar" style="display:none">
+    <div class="logo"><a href="index.html" style="text-decoration:none;color:inherit;">notes</a></div>
+
+    <div id="userBar" class="topbar-user">
+      <img class="user-avatar" id="userAvatar" src="" alt="">
+      <span class="user-name" id="userName"></span>
+      <button class="logout-btn" id="logoutBtn">Sign out</button>
+    </div>
+
+    <div class="section-label" id="stacksLabel" onclick="toggleSection('stacks')">
+      Stacks <span class="chevron">▾</span>
+    </div>
+    <div class="collapsible" id="stacksCollapsible">
+      <div class="stack-list" id="stackList"></div>
+      <button class="btn-new-stack" onclick="createStack()">+ New stack</button>
+    </div>
+
+    <div class="divider"></div>
+
+    <div class="section-label" id="notesLabel" style="display:none" onclick="toggleSection('notes')">
+      <span id="notesLabelText">notes</span> <span class="chevron">▾</span>
+    </div>
+    <div class="collapsible" id="notesCollapsible">
+      <div class="folder-list" id="folderList"></div>
+      <button class="btn-new-note" id="newNoteBtn" onclick="createNote()">+ New note</button>
+    </div>
+  </div>
+
+  <div class="main" id="mainArea" style="display:none">
+    <div class="topbar" id="topbar" style="display:none">
+      <input id="titleInput" placeholder="note title">
+      <div class="actions">
+        <button class="save" onclick="saveNote()">Save</button>
+        <button class="delete" onclick="deleteNote()">Delete</button>
+      </div>
+    </div>
+    <textarea id="content" placeholder="start writing…" style="display:none"></textarea>
+    <div class="empty-state" id="emptyState">Select a stack to begin</div>
+  </div>
+
+  <!-- Modal -->
+  <div class="modal-overlay" id="modalOverlay">
+    <div class="modal" id="modal">
+      <div class="modal-title" id="modalTitle"></div>
+      <div class="modal-body" id="modalBody"></div>
+      <div class="modal-actions" id="modalActions"></div>
+    </div>
+  </div>
+
+  <script type="module">
+    import {
+      auth, db, provider, signInWithPopup, signOut, onAuthStateChanged,
+      collection, doc, setDoc, deleteDoc, getDocs, query, where
+    } from './firebase.js';
+
+    // ── Auth ──────────────────────────────────────────────────────────────────────
+    let currentUser = null;
+
+    onAuthStateChanged(auth, async user => {
+      if (!user) {
+        window.location.href = 'index.html';
+        return;
+      }
+      currentUser = user;
+      document.getElementById('authLoading').style.display = 'none';
+      document.getElementById('sidebar').style.display = 'flex';
+      document.getElementById('mainArea').style.display = 'flex';
+
+      document.getElementById('userAvatar').src = user.photoURL || '';
+      document.getElementById('userName').textContent = user.displayName || user.email;
+
+      await loadFromFirestore();
+      render();
+    });
+
+    document.getElementById('logoutBtn').onclick = async () => {
+      await signOut(auth);
+      window.location.href = 'index.html';
+    };
+
+    // ── State ─────────────────────────────────────────────────────────────────────
+    let db_local = { stacks: {}, notes: {} };
+    let currentStack = null;
+    let currentNote = null;
+
+    function uid() { return '_' + Math.random().toString(36).slice(2, 9); }
+    function fmt(ts) {
+      if (!ts) return '';
+      return new Date(ts).toLocaleDateString('en-us', { month: 'short', day: 'numeric' });
+    }
+    function notesInStack(stackId) {
+      return Object.entries(db_local.notes)
+        .filter(([, n]) => n.stackId === stackId)
+        .sort((a, b) => (b[1].ts || 0) - (a[1].ts || 0));
+    }
+
+    // ── Firestore ─────────────────────────────────────────────────────────────────
+    async function loadFromFirestore() {
+      const uid = currentUser.uid;
+
+      const stacksSnap = await getDocs(collection(db, 'users', uid, 'stacks'));
+      stacksSnap.forEach(d => { db_local.stacks[d.id] = d.data(); });
+
+      const notesSnap = await getDocs(collection(db, 'users', uid, 'notes'));
+      notesSnap.forEach(d => { db_local.notes[d.id] = d.data(); });
+    }
+
+    async function fsSetStack(id, data) {
+      await setDoc(doc(db, 'users', currentUser.uid, 'stacks', id), data);
+    }
+    async function fsDeleteStack(id) {
+      await deleteDoc(doc(db, 'users', currentUser.uid, 'stacks', id));
+    }
+    async function fsSetNote(id, data) {
+      await setDoc(doc(db, 'users', currentUser.uid, 'notes', id), data);
+    }
+    async function fsDeleteNote(id) {
+      await deleteDoc(doc(db, 'users', currentUser.uid, 'notes', id));
+    }
+
+    // ── Render ────────────────────────────────────────────────────────────────────
+    function render() { renderStacks(); renderNotes(); renderEditor(); }
+
+    function renderStacks() {
+      const el = document.getElementById('stackList');
+      el.innerHTML = '';
+      Object.entries(db_local.stacks).forEach(([id, s]) => {
+        const div = document.createElement('div');
+        div.className = 'stack-item' + (currentStack === id ? ' active' : '');
+        const name = document.createElement('span');
+        name.className = 'stack-item-name';
+        name.textContent = s.name;
+        name.onclick = () => { currentStack = id; currentNote = null; render(); };
+        const del = document.createElement('button');
+        del.className = 'stack-del';
+        del.textContent = '×';
+        del.onclick = e => { e.stopPropagation(); deleteStack(id); };
+        div.appendChild(name); div.appendChild(del);
+        el.appendChild(div);
+      });
+    }
+
+    function renderNotes() {
+      const label = document.getElementById('notesLabel');
+      const labelText = document.getElementById('notesLabelText');
+      const list = document.getElementById('folderList');
+      const newBtn = document.getElementById('newNoteBtn');
+      const collapsible = document.getElementById('notesCollapsible');
+      list.innerHTML = '';
+      if (!currentStack) {
+        label.style.display = 'none';
+        newBtn.classList.remove('visible');
+        collapsible.classList.add('collapsed');
+        return;
+      }
+      label.style.display = 'flex';
+      newBtn.classList.add('visible');
+      if (!label.classList.contains('collapsed')) collapsible.classList.remove('collapsed');
+      labelText.textContent = db_local.stacks[currentStack]?.name || 'notes';
+      notesInStack(currentStack).forEach(([id, n]) => {
+        const div = document.createElement('div');
+        div.className = 'folder' + (currentNote === id ? ' active' : '');
+        div.innerHTML = `<div class="folder-title">${n.title || 'untitled'}</div><div class="folder-date">${fmt(n.ts)}</div>`;
+        div.onclick = () => { currentNote = id; renderNotes(); renderEditor(); };
+        list.appendChild(div);
+      });
+    }
+
+    window.toggleSection = function (section) {
+      const label = document.getElementById(section === 'stacks' ? 'stacksLabel' : 'notesLabel');
+      const collapsible = document.getElementById(section === 'stacks' ? 'stacksCollapsible' : 'notesCollapsible');
+      label.classList.toggle('collapsed');
+      collapsible.classList.toggle('collapsed');
+    };
+
+    function renderEditor() {
+      const topbar = document.getElementById('topbar');
+      const textarea = document.getElementById('content');
+      const emptyState = document.getElementById('emptyState');
+      if (!currentNote || !db_local.notes[currentNote]) {
+        topbar.style.display = 'none';
+        textarea.style.display = 'none';
+        emptyState.style.display = 'flex';
+        emptyState.textContent = currentStack ? 'select a note or create one' : 'select a stack to begin';
+        return;
+      }
+      topbar.style.display = 'flex';
+      textarea.style.display = 'block';
+      emptyState.style.display = 'none';
+      const n = db_local.notes[currentNote];
+      document.getElementById('titleInput').value = n.title || '';
+      document.getElementById('content').value = n.content || '';
+      const s = document.querySelector('.save');
+      s.textContent = 'Save'; s.className = 'save';
+    }
+
+    // ── Modal ─────────────────────────────────────────────────────────────────────
+    function openModal({ title, body, confirmLabel, confirmClass = 'confirm', onConfirm }) {
+      document.getElementById('modalTitle').textContent = title;
+      document.getElementById('modalBody').innerHTML = body;
+      document.getElementById('modalOverlay').classList.add('open');
+      const actions = document.getElementById('modalActions');
+      actions.innerHTML = '';
+      const cancelBtn = document.createElement('button');
+      cancelBtn.className = 'modal-btn cancel';
+      cancelBtn.textContent = 'Cancel';
+      cancelBtn.onclick = closeModal;
+      const confirmBtn = document.createElement('button');
+      confirmBtn.className = `modal-btn ${confirmClass}`;
+      confirmBtn.textContent = confirmLabel;
+      confirmBtn.onclick = () => { closeModal(); onConfirm(); };
+      actions.appendChild(cancelBtn); actions.appendChild(confirmBtn);
+      const inp = document.getElementById('modalInput');
+      if (inp) {
+        inp.focus();
+        inp.addEventListener('keydown', e => { if (e.key === 'Enter') confirmBtn.click(); });
+      }
+    }
+    function closeModal() { document.getElementById('modalOverlay').classList.remove('open'); }
+    document.getElementById('modalOverlay').addEventListener('click', e => {
+      if (e.target === document.getElementById('modalOverlay')) closeModal();
+    });
+
+    // ── Actions ───────────────────────────────────────────────────────────────────
+    window.createStack = function () {
+      openModal({
+        title: 'New Stack',
+        body: '<input id="modalInput" placeholder="Stack name" maxlength="40">',
+        confirmLabel: 'Create',
+        onConfirm: async () => {
+          const name = document.getElementById('modalInput')?.value.trim();
+          if (!name) return;
+          const id = uid();
+          db_local.stacks[id] = { name };
+          await fsSetStack(id, { name });
+          currentStack = id; currentNote = null;
+          render();
+        }
+      });
+    };
+
+    window.deleteStack = function (id) {
+      const stackName = db_local.stacks[id]?.name || 'this stack';
+      openModal({
+        title: 'Delete Stack',
+        body: `<p>Delete <strong>${stackName}</strong> and all its notes? This can't be undone.</p>`,
+        confirmLabel: 'Delete', confirmClass: 'danger',
+        onConfirm: async () => {
+          const noteIds = Object.keys(db_local.notes).filter(nid => db_local.notes[nid].stackId === id);
+          for (const nid of noteIds) { await fsDeleteNote(nid); delete db_local.notes[nid]; }
+          await fsDeleteStack(id); delete db_local.stacks[id];
+          if (currentStack === id) { currentStack = null; currentNote = null; }
+          render();
+        }
+      });
+    };
+
+    window.createNote = async function () {
+      if (!currentStack) return;
+      const id = uid();
+      const data = { title: '', content: '', stackId: currentStack, ts: Date.now() };
+      db_local.notes[id] = data;
+      await fsSetNote(id, data);
+      currentNote = id;
+      render();
+      document.getElementById('titleInput').focus();
+    };
+
+    window.saveNote = async function () {
+      if (!currentNote) return;
+      db_local.notes[currentNote].title = document.getElementById('titleInput').value.trim() || 'untitled';
+      db_local.notes[currentNote].content = document.getElementById('content').value;
+      db_local.notes[currentNote].ts = Date.now();
+      await fsSetNote(currentNote, db_local.notes[currentNote]);
+      renderNotes();
+      const s = document.querySelector('.save');
+      s.textContent = 'Saved ✓'; s.className = 'save saved';
+      setTimeout(() => { s.textContent = 'Save'; s.className = 'save'; }, 1500);
+    };
+
+    window.deleteNote = function () {
+      if (!currentNote) return;
+      const title = db_local.notes[currentNote]?.title || 'this note';
+      openModal({
+        title: 'Delete Note',
+        body: `<p>Delete <strong>${title}</strong>? This can't be undone.</p>`,
+        confirmLabel: 'Delete', confirmClass: 'danger',
+        onConfirm: async () => {
+          await fsDeleteNote(currentNote);
+          delete db_local.notes[currentNote];
+          currentNote = null;
+          render();
+        }
+      });
+    };
+
+    document.addEventListener('keydown', e => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 's') { e.preventDefault(); if (currentNote) window.saveNote(); }
+      if (e.key === 'Escape') closeModal();
+    });
+
+    if ("serviceWorker" in navigator) {
+        window.addEventListener("load", async () => {
+          try {
+            await navigator.serviceWorker.register("/sw.js");
+            console.log("Service Worker Registered");
+          } catch (err) {
+            console.error("SW Registration Failed", err);
+          }
+        });
+      }
+  </script>
+</body>
+
+</html>
