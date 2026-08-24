@@ -3,6 +3,8 @@
 A clean, minimal note-taking app with a pastel glassmorphism aesthetic. Organize notes into stacks, write freely, save instantly.
 
 ![easy notes](https://img.shields.io/badge/built%20with-html%20css%20js-CFE1FF?style=flat-square)
+
+
 <img src="https://api.visitorbadge.io/api/VisitorHit?user=anshverma1975&repo=easy-notes&label=VIEWS&countColor=7c3aed&labelColor=1e1b4b" alt="Views" />
 
 ## features
